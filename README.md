@@ -25,6 +25,43 @@ By default this driver uses `async`. If you prefer to use a blocking API instead
 
 See the `examples` folder for complete usage examples.
 
+## 4.2-inch black/white fast updates
+
+The 400x300 GDEY042T81 (SSD1683) uses its built-in waveform for differential
+updates. The driver does not upload the smaller panels' custom LUT to it.
+A full refresh uses update control `0xF7`; a fast refresh uses `0xFC`.
+
+For a blocking driver, use:
+
+```rust,ignore
+driver.init()?;
+driver.full_update(&display)?; // establishes the initial image
+// Draw the next image into display.
+driver.fast_update(&display)?;
+// Or update only a byte-aligned region using a smaller DisplayBlackWhite:
+driver.fast_partial_update(&region, 40, 160)?;
+```
+
+With the default async API, await these calls. A first `fast_update` falls back
+to one full refresh. A first partial update initializes the rest of the screen
+to white and performs a full refresh. Later updates use the fast waveform.
+The partial region's x coordinate and width must be multiples of 8; its height
+may be a single row.
+
+The high-level update methods synchronize both controller RAM planes after each
+refresh. If using `write_bw_buffer` and `fast_refresh` directly, write the new
+image to both the B/W and red (previous-image) RAM after the refresh completes.
+Do not overwrite the previous-image RAM before a differential refresh.
+
+`sleep()` powers down the panel's driving voltages and enters RAM-retaining
+sleep. `wake_up()` restores its registers so the same driver can continue fast
+updates. After removing panel power or recreating the driver, initialize and
+establish a full image again. Use an occasional full update to clear accumulated
+ghosting.
+
+See [the ESP32-C6 timing example](examples/esp32c6/README.md) for wiring,
+flashing, and measured results.
+
 ## Features
 
 - `blocking`: Replaces the API with a blocking version. This disables the `async` API so you cannot use both in the same project.

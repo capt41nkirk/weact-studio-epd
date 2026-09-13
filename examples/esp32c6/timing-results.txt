@@ -1,0 +1,21 @@
+2026-09-13 | ESP32-C6 | WeAct 4.2 B/W | SPI 100 kHz | GPIO14 low
+
+INFO - GDEY042T81 timing test: SPI 100 kHz, BUSY GPIO23 active high
+INFO - initial full update: 8754 ms
+INFO - full frame fast 0: refresh=964 ms, total=4597 ms
+INFO - full frame fast 1: refresh=964 ms, total=4597 ms
+INFO - full frame fast 2: refresh=964 ms, total=4597 ms
+INFO - partial 0: total=1588 ms
+INFO - partial 1: total=1588 ms
+INFO - partial 2: total=1588 ms
+INFO - partial 3: total=1588 ms
+INFO - partial 4: total=1588 ms
+INFO - Testing display sleep / wake (RAM retained)
+INFO - partial 5: total=1588 ms
+INFO - partial 6: total=1588 ms
+INFO - partial 7: total=1588 ms
+INFO - partial 8: total=1588 ms
+INFO - partial 9: total=1588 ms
+INFO - recovery full update: 8754 ms
+INFO - partial after full: 1588 ms
+INFO - TIMING TEST COMPLETE: final screen Full frame fast 2 / Static text must stay / Partial update 9

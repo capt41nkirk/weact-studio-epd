@@ -80,6 +80,9 @@ where
     C: ColorType,
 {
     const RESET_DELAY_MS: u32 = 50;
+    // The 4.2-inch GDEY042T81 uses SSD1683 OTP waveforms, unlike the
+    // smaller SSD1680 panels. Keep their existing LUT path separate.
+    const IS_SSD1683: bool = WIDTH == 400 && HEIGHT == 300 && C::BUFFER_COUNT == 1;
 
     /// Create a new display driver.
     ///
@@ -96,7 +99,7 @@ where
         }
     }
 
-    /// Initialize the display
+    /// Initialize the display. The next update must establish a full-refresh baseline.
     pub async fn init(&mut self) -> Result<()> {
         self.hw_reset().await;
         self.command(command::SW_RESET).await?;
@@ -111,11 +114,17 @@ where
             .await?;
         self.command_with_data(
             command::BORDER_WAVEFORM_CONTROL,
-            &[flag::BORDER_WAVEFORM_FOLLOW_LUT | flag::BORDER_WAVEFORM_LUT1],
+            &[if Self::IS_SSD1683 {
+                0x01
+            } else {
+                flag::BORDER_WAVEFORM_FOLLOW_LUT | flag::BORDER_WAVEFORM_LUT1
+            }],
         )
         .await?;
-        self.command_with_data(command::DISPLAY_UPDATE_CONTROL, &[0x00, 0x80])
-            .await?;
+        if !Self::IS_SSD1683 {
+            self.command_with_data(command::DISPLAY_UPDATE_CONTROL, &[0x00, 0x80])
+                .await?;
+        }
         self.command_with_data(command::TEMP_CONTROL, &[flag::INTERNAL_TEMP_SENSOR])
             .await?;
         self.use_full_frame().await?;
@@ -125,6 +134,8 @@ where
 
     /// Perform a hardware reset of the display.
     pub async fn hw_reset(&mut self) {
+        self.using_partial_mode = false;
+        self.initial_full_refresh_done = false;
         self.reset.set_low().unwrap();
         self.delay.delay_ms(Self::RESET_DELAY_MS).await;
         self.reset.set_high().unwrap();
@@ -204,7 +215,11 @@ where
         self.use_full_frame().await?;
 
         // TODO: allow non-white background color
-        let color = color::Color::White.byte_value().1;
+        let color = if C::BUFFER_COUNT == 1 {
+            color::Color::White.byte_value().0
+        } else {
+            color::TriColor::White.byte_value().1
+        };
 
         self.command(command::WRITE_RED_DATA).await?;
         self.data_x_times(color, WIDTH / 8 * HEIGHT).await?;
@@ -213,8 +228,11 @@ where
 
     /// Start a full refresh of the display.
     pub async fn full_refresh(&mut self) -> Result<()> {
-        self.initial_full_refresh_done = true;
+        self.initial_full_refresh_done = false;
         self.using_partial_mode = false;
+        if Self::IS_SSD1683 {
+            self.use_full_frame().await?;
+        }
 
         self.command_with_data(command::DISPLAY_UPDATE_CONTROL, &[0x40, 0x00])
             .await?;
@@ -222,13 +240,24 @@ where
         self.command_with_data(command::UPDATE_DISPLAY_CTRL2, &[flag::DISPLAY_MODE_1])
             .await?;
         self.command(command::MASTER_ACTIVATE).await?;
+        self.delay.delay_ms(1).await;
         self.wait_until_idle().await;
+        self.initial_full_refresh_done = true;
         Ok(())
     }
 
     /// Put the device into deep-sleep mode.
-    /// You will need to call wakeup() before you can draw to the screen again.
+    /// You will need to call [`Self::wake_up`] before drawing again.
     pub async fn sleep(&mut self) -> Result<()> {
+        if Self::IS_SSD1683 {
+            // Partial refresh leaves the panel driving voltages enabled.
+            self.command_with_data(command::UPDATE_DISPLAY_CTRL2, &[0x83])
+                .await?;
+            self.command(command::MASTER_ACTIVATE).await?;
+            self.delay.delay_ms(1).await;
+            self.wait_until_idle().await;
+            self.using_partial_mode = false;
+        }
         // We can't use send_with_data, because the data function will also wait_until_idle,
         // but after sending the deep sleep command, busy will not be cleared,
         // maybe as a feature to signal the device won't be able to process further instuctions until woken again.
@@ -242,9 +271,22 @@ where
     }
 
     /// Wake the device up from deep-sleep mode.
+    ///
+    /// The 4.2-inch panel's registers are reinitialized while retaining the
+    /// previous-image baseline in RAM. This requires continuous panel power
+    /// and the same driver instance. After a power loss, call [`Self::init`]
+    /// and provide a full image again.
     pub async fn wake_up(&mut self) -> Result<()> {
-        // HW reset seems to be enough in deep sleep mode 1, no need to call init again
-        self.hw_reset().await;
+        if Self::IS_SSD1683 {
+            // Mode 1 retains RAM, but controller registers must be restored.
+            let initial_full_refresh_done = self.initial_full_refresh_done;
+            self.init().await?;
+            self.initial_full_refresh_done = initial_full_refresh_done;
+        } else {
+            let initial_full_refresh_done = self.initial_full_refresh_done;
+            self.hw_reset().await;
+            self.initial_full_refresh_done = initial_full_refresh_done;
+        }
         Ok(())
     }
 
@@ -254,7 +296,19 @@ where
     }
 
     async fn use_partial_frame(&mut self, x: u32, y: u32, width: u32, height: u32) -> Result<()> {
-        // TODO: make sure positions are byte-aligned
+        assert!(
+            x & 7 == 0 && width & 7 == 0,
+            "x and width must be byte-aligned"
+        );
+        assert!(width > 0 && height > 0, "frame must not be empty");
+        assert!(
+            x < WIDTH && width <= WIDTH - x,
+            "frame exceeds display width"
+        );
+        assert!(
+            y < HEIGHT && height <= HEIGHT - y,
+            "frame exceeds display height"
+        );
         self.set_ram_area(x, y, x + width - 1, y + height - 1)
             .await?;
         self.set_ram_counter(x, y).await?;
@@ -268,8 +322,8 @@ where
         end_x: u32,
         end_y: u32,
     ) -> Result<()> {
-        assert!(start_x < end_x);
-        assert!(start_y < end_y);
+        assert!(start_x <= end_x);
+        assert!(start_y <= end_y);
 
         self.command_with_data(
             command::SET_RAMXPOS,
@@ -304,6 +358,7 @@ where
 
     /// Send a command to the display.
     async fn command(&mut self, command: u8) -> Result<()> {
+        log::debug!("EPD command 0x{:02x}", command);
         self.interface
             .send_commands(DataFormat::U8(&[command]))
             .await?;
@@ -317,7 +372,7 @@ where
         Ok(())
     }
 
-    /// Waits until device isn't busy anymore (busy == HIGH).
+    /// Waits until device isn't busy anymore (BUSY is active high).
     async fn wait_until_idle(&mut self) {
         #[cfg(feature = "blocking")]
         while self.busy.is_high().unwrap_or(true) {
@@ -368,24 +423,27 @@ where
     /// Start a fast refresh of the display using the current in-screen buffers.
     ///
     /// If the display hasn't done a [`Self::full_refresh`] yet, it will do that first.
+    /// The first call performs only that full refresh. On B/W panels, the red
+    /// RAM must contain the previous image; synchronize both RAM planes after
+    /// refreshing, or use the higher-level update methods that do this for you.
     pub async fn fast_refresh(&mut self) -> Result<()> {
         if !self.initial_full_refresh_done {
-            // There a bug here which causes the new image to overwrite the existing image which then
-            // fades out over several updates.
-            self.full_refresh().await?;
+            return self.full_refresh().await;
         }
 
-        if !self.using_partial_mode {
+        if !Self::IS_SSD1683 && !self.using_partial_mode {
             self.command_with_data(command::WRITE_LUT, &lut::LUT_PARTIAL_UPDATE)
                 .await?;
             self.using_partial_mode = true;
         }
-        self.command_with_data(command::DISPLAY_UPDATE_CONTROL, &[0x00])
+        self.command_with_data(command::DISPLAY_UPDATE_CONTROL, &[0x00, 0x00])
             .await?;
-        self.data(&[0x00]).await?;
         self.command_with_data(command::UPDATE_DISPLAY_CTRL2, &[0xfc])
             .await?;
         self.command(command::MASTER_ACTIVATE).await?;
+        // BUSY can take a moment to assert after MASTER_ACTIVATE (GxEPD2
+        // uses the same 1 ms margin). Do not mistake that gap for completion.
+        self.delay.delay_ms(1).await;
         self.wait_until_idle().await;
         Ok(())
     }
@@ -402,6 +460,9 @@ where
 
     /// Update the screen with the provided full frame buffer using a fast refresh.
     pub async fn fast_update_from_buffer(&mut self, buffer: &[u8]) -> Result<()> {
+        if !self.initial_full_refresh_done {
+            return self.full_update_from_buffer(buffer).await;
+        }
         self.write_bw_buffer(buffer).await?;
         self.fast_refresh().await?;
         self.write_red_buffer(buffer).await?;
@@ -412,6 +473,8 @@ where
     /// Update the screen with the provided partial frame buffer at the given position using a fast refresh.
     ///
     /// `x`, and `width` must be multiples of 8.
+    /// On the 4.2-inch panel, the first update initializes the rest of the
+    /// screen to white and performs a full refresh to establish a baseline.
     pub async fn fast_partial_update_from_buffer(
         &mut self,
         buffer: &[u8],
@@ -420,6 +483,14 @@ where
         width: u32,
         height: u32,
     ) -> Result<()> {
+        if Self::IS_SSD1683 && !self.initial_full_refresh_done {
+            // A first partial write must not leave the rest of either RAM
+            // plane undefined when fast_refresh falls back to a full update.
+            self.clear_bw_buffer().await?;
+            self.clear_red_buffer().await?;
+            self.write_partial_red_buffer(buffer, x, y, width, height)
+                .await?;
+        }
         self.write_partial_bw_buffer(buffer, x, y, width, height)
             .await?;
         self.fast_refresh().await?;
