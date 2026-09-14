@@ -290,6 +290,22 @@ where
         Ok(())
     }
 
+    /// Resume a recreated 4.2-inch B/W driver after the MCU slept.
+    ///
+    /// The caller must guarantee continuous panel power, a completed full/fast
+    /// update with both RAM planes synchronized, and successful RAM-retaining
+    /// `sleep()` before MCU sleep. Do not call after panel power loss, an
+    /// interrupted update, or an unknown reset. Use `init()` in those cases.
+    /// Other panels reject this operation without changing driver state.
+    pub async fn resume_retained(&mut self) -> Result<()> {
+        if !Self::IS_SSD1683 {
+            return Err(display_interface::DisplayError::InvalidFormatError);
+        }
+        self.init().await?;
+        self.initial_full_refresh_done = true;
+        Ok(())
+    }
+
     async fn use_full_frame(&mut self) -> Result<()> {
         self.use_partial_frame(0, 0, WIDTH, HEIGHT).await?;
         Ok(())

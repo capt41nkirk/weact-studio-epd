@@ -274,3 +274,23 @@ fn smaller_panel_still_loads_its_partial_lut() {
     run(d.fast_update_from_buffer(&[0xff; 4736])).unwrap();
     assert_eq!(writes(&t, 0x32).len(), 1);
 }
+
+#[test]
+fn recreated_driver_can_explicitly_resume_retained_panel() {
+    let (mut original, _) = driver();
+    run(original.init()).unwrap();
+    run(original.full_update_from_buffer(&[0xff; 15000])).unwrap();
+    run(original.sleep()).unwrap();
+    drop(original);
+    let (mut resumed, trace) = driver();
+    run(resumed.resume_retained()).unwrap();
+    trace.borrow_mut().clear();
+    run(resumed.fast_update_from_buffer(&[0x55; 15000])).unwrap();
+    assert_eq!(writes(&trace, 0x22), vec![vec![0xfc]]);
+    assert_eq!(writes(&trace, 0x24), vec![vec![0x55; 15000]; 2]);
+    assert_eq!(writes(&trace, 0x26), vec![vec![0x55; 15000]]);
+    run(resumed.init()).unwrap();
+    trace.borrow_mut().clear();
+    run(resumed.fast_update_from_buffer(&[0xff; 15000])).unwrap();
+    assert_eq!(writes(&trace, 0x22), vec![vec![0xf7]]);
+}

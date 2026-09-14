@@ -55,9 +55,15 @@ Do not overwrite the previous-image RAM before a differential refresh.
 
 `sleep()` powers down the panel's driving voltages and enters RAM-retaining
 sleep. `wake_up()` restores its registers so the same driver can continue fast
-updates. After removing panel power or recreating the driver, initialize and
-establish a full image again. Use an occasional full update to clear accumulated
-ghosting.
+updates. After removing panel power, initialize and establish a full image again.
+A recreated 4.2-inch B/W driver can call `resume_retained()` instead of `init()`
+only if the application guarantees continuous panel power, a successfully
+synchronized baseline followed by `sleep()`, and an uninterrupted MCU deep-sleep
+cycle. This explicit opt-in restores the same baseline state as `wake_up()`;
+ordinary `new()` / `init()` still require a full image. Applications should
+invalidate their retained marker before starting an update and commit it only
+after RAM synchronization and panel sleep succeed. Use an occasional full
+update to clear accumulated ghosting.
 
 See [the ESP32-C6 timing example](examples/esp32c6/README.md) for wiring,
 flashing, and measured results.
